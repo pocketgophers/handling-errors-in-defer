@@ -1,0 +1,1 @@
+This is the example code for https://pocketgophers.com/handling-errors-in-defer

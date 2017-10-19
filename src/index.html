@@ -1,0 +1,254 @@
+{{versionComment}}
+{{$example := example srcDir distDir}}
+{{$example.Distribute "readme.md"}}
+
+<!--
+PAIN: handling errors on `defer f.Close()` does not fit in the normal error handling paradigm on `if err != nil`
+
+DREAM: handling errors on `defer f.Close()` comes as naturally as using `if err != nil`
+
+FIX: set of simple rules
+
+Goal: check all errors; don’t discard potentially useful errors
+-->
+
+<blockquote><!-- https://groups.google.com/d/msg/golang-nuts/BUdfYcO-sB8/lxGS_tOKBAAJ -->
+The reason I didn&#39;t do it, is because I don&#39;t know how to do it. In essence, that &quot;f.Close()&quot; that you are worried about is wrapped in &quot;defer f.Close&quot; in SaveState in a function. I.e., all is happening during the program tear-down phase. If we are not planting a &quot;log.Fatalln(err)&quot; bomb in SaveState itself, how do you thing we should check it properly?
+</blockquote>
+
+<p>We have all seen or written a function like:</p>
+
+<pre><code data-lang="go">func process() error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// some process using f
+
+	return nil
+}
+</code></pre>
+
+<p>This is a process that depends on a resource, <code data-lang="go">f</code>, that needs to be cleaned up. <code data-lang="go">defer</code> keeps the cleanup, <code data-lang="go">f.Close</code>, close to the setup, <code data-lang="go">os.Open</code>, and makes sure the cleanup happens even if the function <code data-lang="go">return</code>s early.</p>
+
+<p>The problem is the <code data-lang="go">error</code> returned by <code data-lang="go">f.Close</code> is ignored.</p>
+
+<h2>A Working Example</h2>
+
+{{$main := $example.File "main.go"}}
+{{$ignored := $example.Method "ignored"}}
+
+<p>To understand the <code data-lang="go">error</code>s not being handled, we first need to control the <code data-lang="go">error</code>s that are encountered. The <code data-lang="go">process</code> function can be thought of as only calling three functions: <code data-lang="go">Open</code>, <code data-lang="go">Close</code>, and <code data-lang="go">Process</code>. While a real-world process would use many processing functions, I use <code data-lang="go">Process</code> to indicate if there was an error somewhere during the processing (it is common to <code data-lang="go">return</code> as soon as there is an <code data-lang="go">error</code> in the process).</p>
+
+<p>To control which functions <code data-lang="go">return</code> an <code data-lang="go">error</code>, I created <code data-lang="go">errorOn</code>:</p>
+
+{{(($example.File "main.go").Part "errorOn").HTML}}
+
+<p>Setting the fields controls the <code data-lang="go">error</code>s encountered. Displaying which methods were executed makes the difference between an ignored <code data-lang="go">error</code> and a method not being called visible.</p>
+
+<p>The motivating process that ignores the <code data-lang="go">error</code> from <code data-lang="go">Close</code> can then be implemented as:</p>
+
+{{($ignored.Decl "process").HTML}}
+
+<p>While this particular function can be simplified by directly <code data-lang="go">return</code>ing <code data-lang="go">ocp.Process</code>, the expanded form is a reminder that it takes the place of some more complicated process that <code data-lang="go">return</code>s immediately when an <code data-lang="go">error</code> is encountered. The final <code data-lang="go">return nil</code> is what should happen when there are no <code data-lang="go">error</code>s in the process.</p>
+
+<p>The last part we need to get this example working is to set the <code data-lang="go">error</code>s that will be encountered and execute <code data-lang="go">process</code>:</p>
+
+{{($ignored.Decl "main").HTML}}
+
+<p>The <code data-lang="go">error</code> type and value are printed to further show what is happening.</p>
+
+<p>Following my practice of <a href="/exploring-alternatives-with-go-run/">exploring alternatives with <code>go run</code></a>, I put <code data-lang="go">errorOn</code> and <code data-lang="go">main()</code> into <code>main.go</code>. The alternatives we are exploring have different <code data-lang="go">process</code>es. This alternative is in <code>ignored.go</code>.</p>
+
+<p>Get the example code with:</p>
+
+<pre>go get -d pocketgophers.com/{{name}}</pre>
+
+<p>Running this alternative without setting any <code data-lang="go">error</code>s produces:</p>
+
+<pre>{{$ignored.Run}}</pre>
+
+<p>We can see that each of the methods was ran and that no <code data-lang="go">error</code> was returned. The first potential <code data-lang="go">error</code> is from <code data-lang="go">Open</code>:</p>
+
+<pre>{{$ignored.Run "open"}}</pre>
+
+<p>Notice that only <code>Open</code> was ran and the <code data-lang="go">return</code>ed <code data-lang="go">error</code> is <code>open</code> (<code data-lang="go">errors.New()</code>, used to create the <code data-lang="go">error</code>, returns an <code>*errors.errorString</code>). Encountering an <code data-lang="go">error</code> on <code data-lang="go">Process</code> works in a similar way:</p>
+
+<pre>{{$ignored.Run "process"}}</pre>
+
+<p>Next up is encountering an error on <code data-lang="go">Close</code>:</p>
+
+<pre>{{$ignored.Run "close"}}</pre>
+
+<p>Since the returned error is <code data-lang="go">nil</code>, we know that the error on <code>Close</code> was ignored.</p>
+
+<h2>Returning a <code data-lang="go">defer</code>red <code data-lang="go">error</code></h2>
+
+{{$close := $example.Method "close"}}
+
+<p><code data-lang="go">defer</code> works on a function or method call. </p>
+
+<blockquote>[…] if the deferred function is a function literal and the surrounding function has named result parameters that are in scope within the literal, the deferred function may access and modify the result parameters before they are returned. If the deferred function has any return values, they are discarded when the function completes. <cite><a href="https://golang.org/ref/spec#Defer_statements">Go Spec.: Defer Statements</a></cite></blockquote>
+
+<p>Following this recommendation, I updated <code data-lang="go">process</code> to:</p>
+
+{{($close.Decl "process").HTML}}
+
+<p>With these changes, the <code data-lang="go">error</code> from <code data-lang="go">Close</code> is no longer ignored:</p>
+
+<pre>{{$close.Run "close"}}</pre>
+
+<p>However, when <code data-lang="go">error</code>s are <code data-lang="go">return</code>ed by <code>Process</code> and <code>Close</code>:</p>
+
+<pre>{{$close.Run "process" "close"}}</pre>
+
+<p>The <code data-lang="go">error</code> from <code>Close</code> overwrites the one from <code>Process</code>.</p>
+
+<h2>Returning multiple <code data-lang="go">error</code>s</h2>
+
+{{$errors := $example.Method "errors"}}
+
+<p>When both <code>Close</code> and <code>Process</code> return <code data-lang="go">error</code>s, there are two <code data-lang="go">error</code>s. Let’s accept that fact, and generalize it to any number of concurrent <code data-lang="go">errors</code>, by following these rules:</p>
+
+<ol>
+	<li>The function must <code data-lang="go">return</code> a named <code data-lang="go">[]error</code>, I like to name it <code data-lang="go">errs</code> (plural of <code data-lang="go">err</code>)</li>
+	<li>To <code data-lang="go">return</code> an <code data-lang="go">error</code>, write: <code data-lang="go">return append(errs, err)</code> (this also works when <code data-lang="go">return</code>ing multiple values)</li>
+	<li>Set <code data-lang="go">errs</code> in <code data-lang="go">defer</code>red functions with: <code data-lang="go">errs = append(errs, err)</code></li>
+	<li>Don't <code data-lang="go">append</code> <code data-lang="go">nil</code> <code data-lang="go">error</code>s to <code data-lang="go">errs</code></li>
+</ol>
+
+<p>Updating our alternative following these rules results in:</p>
+
+{{($errors.Decl "process").HTML}}
+
+<p>Now both <code data-lang="go">error</code>s are returned:</p>
+
+<pre>{{$errors.Run "process" "close"}}</pre>
+
+<h2>Handling <code data-lang="go">[]error</code></h2>
+
+<p>Functions <code data-lang="go">return</code>ing <code data-lang="go">[]error</code> aren't as common as those <code data-lang="go">return</code>ing <code data-lang="go">error</code>. After calling <code data-lang="go">errs := process(ocp)</code>, the following expectations can be made about <code data-lang="go">errs</code>:</p>
+
+<ul>
+	<li><code data-lang="go">errs != nil</code> may not indicate there are no errors. If <code data-lang="go">errs</code> were initialized but is still empty, it would not be <code data-lang="go">nil</code> but would also contain no errors. This can be covered by using <code data-lang="go">errs != nil &amp;&amp; len(errs) &gt; 0</code>, but can be shortened to <code data-lang="go">len(errs) &gt; 0</code> because the length of a <code data-lang="go">nil</code> slice is zero.</li>
+	<li><code data-lang="go">errs</code> does not implement <code data-lang="go">error</code>.</li>
+	<li><code data-lang="go">log.Println(errs)</code> works if the default way of printing arrays is acceptable.</li>
+	<li><code data-lang="go">for _, err := range errs</code> splits the <code data-lang="go">error</code>s apart and won&#39;t do anything when there are no <code data-lang="go">error</code>s. This means that if you only need to do something with the <code data-lang="go">error</code>s, like logging them, you don&#39;t need <code data-lang="go">if len(errs) &gt; 0</code> and can just use <code data-lang="go">for _, err := range errs</code></li>
+	<li><code data-lang="go">errs</code> can contain <code data-lang="go">nil</code> <code data-lang="go">errors</code></li>
+</ul>
+
+<p>These expectations can be reduced into the following rules for handling <code data-lang="go">[]error</code>:</p>
+
+<ol>
+	<li><code data-lang="go">if len(errs) &gt; 0</code> to check for errors (assuming none are <code data-lang="go">nil</code>)</li>
+	<li><code data-lang="go">for _, err := range errs</code> to handle errors</li>
+</ol>
+
+<h2>Returning <code data-lang="go">error</code> instead of <code data-lang="go">[]error</code></h2>
+
+{{$multierr := $example.Method "multierr"}}
+
+<p>Sometimes <code data-lang="go">[]error</code>is needed, but an <code data-lang="go">error</code> must <code data-lang="go">return</code>ed instead. There are a few criteria to keep in mind in adapting the previous approach:</p>
+
+<ul>
+	<li><code data-lang="go">err != nil</code> must work (e.g., if there are no <code data-lang="go">error</code>s, the <code data-lang="go">return</code>ed value must be <code data-lang="go">nil</code>)</li>
+	<li>must be able to add an <code data-lang="go">error</code> in a <code data-lang="go">defer</code>red function</li>
+</ul>
+
+<p>There are many ways to make this work. My main goal was to make something that someone familiar with dealing with <code data-lang="go">[]error</code> as shown above would not need to work hard to use.</p>
+
+<p>The first thing to do is make an <code data-lang="go">[]error</code> that fulfills <code data-lang="go">error</code>.</p>
+
+{{($multierr.File.Part "multiErr").HTML}}
+
+<p>Using a <code data-lang="go">struct</code> avoids some runtime type assertions. Directly <code data-lang="go">append</code>ing to <code>multiErr.Errs</code> would complicate each time it was appended to, so I implemented an <code data-lang="go">Append</code> function that mirrors the builtin <code data-lang="go">append</code>:</p>
+
+{{($multierr.File.Part "append").HTML}}
+
+<p>This returns an <code data-lang="go">error</code> so you can replace</p>
+
+<pre><code data-lang="go">return append(errs, err)
+</code></pre>
+
+<p>with</p>
+
+<pre><code data-lang="go">return errs.Append(err)
+</code></pre>
+
+<p>The returned error also indicates that something else needs to be done to have a fully working solution.</p>
+
+<p>The last problem is <code data-lang="go">return</code>ing the <code data-lang="go">multiErr</code> in a way that <code data-lang="go">err != nil</code> will work. I solve this with</p>
+
+{{($multierr.File.Part "return").HTML}}
+
+<p>A <code data-lang="go">defer</code>red call to this function is required at the beginning of your function.</p>
+
+<p>The rules for using <code>multiErr</code> with <code data-lang="go">defer</code> are:</p>
+
+<ol>
+	<li>The function must <code data-lang="go">return</code> a named <code data-lang="go">error</code>, I like to name it <code data-lang="go">rerr</code> (for <code data-lang="go">return</code>ed <code data-lang="go">error</code>)</li>
+	<li>At the beginning of the function, create a <code data-lang="go">multiErr</code>, I like to name it <code data-lang="go">errs</code> (plural of <code data-lang="go">err</code>)</li>
+	<li>The first <code data-lang="go">defer</code> in your function needs to be <code data-lang="go">errs.Return(&amp;rerr)</code>. If it is not, you may miss some <code data-lang="go">error</code>s in <code data-lang="go">defer</code>red functions that run after it (they run in the reverse order they were <code data-lang="go">defer</code>red).</li>
+	<li>To <code data-lang="go">return</code> an <code data-lang="go">error</code>, write: <code data-lang="go">return errs.Append(err)</code> (this also works when <code data-lang="go">return</code>ing multiple values)</li>
+	<li>Set <code data-lang="go">errs</code> in <code data-lang="go">defer</code>red functions with: <code data-lang="go">errs.Append(err)</code></li>
+	<li>Don't <code data-lang="go">Append</code> <code data-lang="go">nil</code> <code data-lang="go">error</code>s to <code data-lang="go">errs</code></li>
+</ol>
+
+<p>Following these rules, process is updated to:</p>
+
+{{($multierr.Decl "process").HTML}}
+
+<pre>{{$multierr.Run}}</pre>
+
+<pre>{{$multierr.Run "process"}}</pre>
+
+<pre>{{$multierr.Run "process" "close"}}</pre>
+
+<p>This is almost as elegant as using <code data-lang="go">[]error</code>, but conforms to the interface and expectation of <code data-lang="go">error</code>.</p>
+
+<h2>Is there a package I can import?</h2>
+
+{{$gomultierror := $example.Method "go-multierror"}}
+
+<p>Yes. <a href="https://github.com/hashicorp/go-multierror">github.com/hashicorp/go-multierror</a>:</p>
+
+{{$gomultierror.File.HTML}}
+
+<p><code data-lang="go">multierror.Append</code> does more work than <code data-lang="go">multiErr.Append</code>, but has the benefit of not needing the <code data-lang="go">defer</code>red function to set <code>rerr</code>.</p>
+
+<pre>{{$gomultierror.Run}}</pre>
+
+<pre>{{$gomultierror.Run "process"}}</pre>
+
+<pre>{{$gomultierror.Run "process" "close"}}</pre>
+
+<p>I was tempted to only call <code data-lang="go">multierror.Append</code> in the <code data-lang="go">defer</code>red function because that is the only place in this example code that can have multiple <code data-lang="go">error</code>s:</p>
+
+{{$deferOnly := $example.Method "go-multierror-defer-only"}}
+
+{{($deferOnly.Decl "process").HTML}}
+
+<pre>{{$deferOnly.Run}}</pre>
+
+<pre>{{$deferOnly.Run "process"}}</pre>
+
+<pre>{{$deferOnly.Run "process" "close"}}</pre>
+
+<p>This is fine if the <code data-lang="go">error</code>s are only printed out or logged, but if the code needs to respond to an <code data-lang="go">error return</code>ed by <code>Process</code>, the <code data-lang="go">error</code> handling code will need two paths to get to that <code data-lang="go">error</code>:</p>
+
+<ol>
+	<li>As an <code data-lang="go">error return</code>ed directly</li>
+	<li>As an <code data-lang="go">error</code> contained in <code data-lang="go">multierror.Error</code></li>
+</ol>
+
+<p>Always using <code>multierror.Append</code> eliminates the first case. The second case cannot be avoided without ignoring an error.</p>
+
+<h2>Summary</h2>
+
+<ol>
+	<li>Name the <code data-lang="go">return</code> value(s) so they can be set in a <code data-lang="go">defer</code>red function.</li>
+	<li>Use <code data-lang="go">[]error</code> if possible.</li>
+	<li>If the function must <code data-lang="go">return</code> an <code data-lang>error</code>, use <a href="https://godoc.org/github.com/hashicorp/go-multierror#Append"><code data-lang="go">multierror.Append</code></a> everywhere you <code data-lang="go">return</code> an <code data-lang="go">error</code> or set the <code data-lang="go">error</code>(s) to be <code data-lang="go">return</code>ed.</li>
+</ol>

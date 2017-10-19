@@ -1,0 +1,3 @@
+Title = "Handling <code data-lang=\"go\">error</code>s in <code data-lang=\"go\">defer</code>"
+Topics = ["error"]
+Mark = "updated"
